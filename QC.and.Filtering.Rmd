@@ -25,7 +25,6 @@ params:
   mitochondrial_contents_threshold: 50
   doubletpercentage: 0.01
   filtered_output: ""
-  
 ---
 
 
