@@ -1,0 +1,198 @@
+---
+title: "Single Cell RNA-Seq QC and Filtering Report"
+author: "Zhaorong Li"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+      toc_depth: 3
+    number_sections: true
+    fig_caption: yes
+    theme: cerulean
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+params:
+  SampleName: ''
+  SamplePath: ''
+  RawInput: FALSE
+  nFeature_RNA_lower_threshold: 0.01
+  nFeature_RNA_higher_threshold: 0.99
+  nCount_RNA_lower_threshold: 0.01
+  nCount_RNA_higher_threshold: 0.99
+  ribosomal_contents_threshold: 25
+  mitochondrial_contents_threshold: 50
+  doubletpercentage: 0.01
+  filtered_output: ""
+  
+---
+
+
+```{r setup, include=FALSE}
+
+suppressPackageStartupMessages({
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(DropletUtils)
+if(!require(remotes)) install.packages("remotes",repos = "http://cran.us.r-project.org")
+remotes::install_github("chris-mcginnis-ucsf/DoubletFinder")
+library(DoubletFinder)
+
+})
+
+```
+
+# Read in samples
+
+If the data is a raw Count Matrix, meaning that the empty droplets are not filtered out by cellranger pipeline or Drop-Seq pipeline, the emptyDrops algorithm from DropUtils will be run in order to remove the empty droplets.
+
+```{r read in samples}
+Data=Read10X_h5(params$SamplePath)
+
+if (params$RawInput) {
+  empty=emptyDrops(Data)
+  empty=data.frame(empty)
+  empty=empty[!is.na(empty$FDR),]
+  empty$DropIdentity=ifelse(empty$FDR<0.05,yes="Non Empty",
+                            no="Empty")
+  ggplot(empty,aes(x=DropIdentity,y=Total))+geom_bar(stat = 'identity')+xlab("Droplet classification")+ylab("Number of UMIs per cell")+ggtitle("Empty Droplet classification")
+  Data=Data[,rownames(empty)[empty$FDR<0.05]]
+
+}
+
+
+```
+
+# QC
+
+In this section the number of genes, number of UMIs and the percentage of mitochondrial contents and ribosomal contents will be visualized.
+
+Mitochondrial contents and ribosomal contents will be calculated based on the mitochondrial and ribosomal genes.
+
+Cells with very high mitochondrial and ribosomal contents will bias the downstream clustering and differential expression analysis.
+
+```{r QC, fig.width=10,fig.height=10}
+
+Data=CreateSeuratObject(Data)
+Data$sample=params$SampleName
+Data$orig.ident=params$SampleName
+
+if (any(grepl("^MT-",rownames(Data)))|any(grepl("^mt-",rownames(Data)))) {
+	if (any(grepl("^MT-",rownames(Data)))) {
+	Data[["percent.mt"]]=PercentageFeatureSet(Data,pattern="^MT-")
+	rb.genes <- rownames(Data)[grep("^RP[SL]",rownames(Data))]
+	Data[["percent.ribo"]] <- PercentageFeatureSet(Data, features = rb.genes)	
+
+
+}
+else if (any(grepl("^mt-",rownames(Data)))) {
+	Data[["percent.mt"]]=PercentageFeatureSet(Data,pattern="^mt-")
+	
+	rb.genes <- rownames(Data)[grep("^Rp[sl]",rownames(Data))]
+	GTgenes=c("Gm42418","AY036118")
+	rb.genes <-c(rb.genes,GTgenes)
+	Data[["percent.ribo"]] <- PercentageFeatureSet(Data, features = rb.genes)	
+
+}} else {
+	Data[["percent.mt"]]=0
+		Data[["percent.ribo"]]=0
+
+}
+
+Unfiltered = Data
+
+VlnPlot(Unfiltered,features = c('nFeature_RNA','nCount_RNA','percent.mt','percent.ribo'),ncol = 2,pt.size = 0)
+
+FeatureScatter(Unfiltered,
+               feature1 = 'nFeature_RNA',
+               feature2 = 'nCount_RNA')+ NoLegend()
+
+if (isFALSE(all(Unfiltered[['percent.mt']]==0))){
+  FeatureScatter(Unfiltered,
+               feature1 = 'nFeature_RNA',
+               feature2 = 'percent.mt')+ NoLegend()
+
+  FeatureScatter(Unfiltered,
+               feature1 = 'nCount_RNA',
+               feature2 = 'percent.mt')+ NoLegend()
+  }
+
+if (isFALSE(all(Unfiltered[['percent.ribo']]==0))){
+  FeatureScatter(Unfiltered,
+               feature1 = 'nFeature_RNA',
+               feature2 = 'percent.ribo')+ NoLegend()
+
+  FeatureScatter(Unfiltered,
+               feature1 = 'nCount_RNA',
+               feature2 = 'percent.ribo')+ NoLegend()
+}
+
+
+```
+
+# Doublet Classification
+
+Doublets, or sometimes called multiplets, are the droplets which include two or more cells. Including these droplets in the downstream analysis will bias the results because these droplets include gene expression profiles of more than 1 cell.
+
+DoubletFinder is used to classify the doublet. The violin plot in this section will show the number features and UMIs of the doublets vs that of non-doublets.
+
+
+```{r Doublet Removal, error=FALSE, fig.height=15, fig.width=15, message=FALSE, warning=FALSE,results = FALSE}
+
+DoubletRemoval <- NormalizeData(Data)
+DoubletRemoval <- FindVariableFeatures(DoubletRemoval)
+DoubletRemoval <- ScaleData(DoubletRemoval)
+
+DoubletRemoval <- RunPCA(DoubletRemoval)
+
+
+params_selection <- paramSweep_v3(DoubletRemoval, PCs = 1:25, sct = F)
+params_selection <- summarizeSweep(params_selection, GT = FALSE)
+params_selection <- find.pK(params_selection)
+
+
+
+annotations <- DoubletRemoval@meta.data$orig.ident
+
+homotypic.prop <- modelHomotypic(annotations) 
+nExp_poi <- round(params$doubletpercentage*nrow(DoubletRemoval@meta.data))  
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+
+
+DoubletRemoval <- doubletFinder_v3(DoubletRemoval, PCs = 1:25, pN = 0.25, pK =as.numeric(as.character(params_selection$pK))[params_selection$BCmetric==max(params_selection$BCmetric)], nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+doublet.classification.name=colnames(DoubletRemoval@meta.data)[ncol(DoubletRemoval@meta.data)]
+DoubletRemoval$Doublet.Classification=DoubletRemoval@meta.data[,doublet.classification.name]
+
+VlnPlot(DoubletRemoval,c("nCount_RNA","nFeature_RNA"),group.by = "Doublet.Classification",pt.size = 0)+NoLegend()
+
+Data$Doublet.Classification=DoubletRemoval$Doublet.Classification
+
+```
+
+
+# Filtering
+
+Based on the quantile information, cells with too low or too high number of features and UMIs are filtered out, which can be observed on the violin plot.
+
+```{r Filtering, fig.width=15,fig.height=15,error=FALSE,warning=FALSE,message=FALSE}
+
+Data$Filtering = ifelse(
+  Data$Doublet.Classification!='Doublet'&
+  Data$nFeature_RNA>quantile(Data$nFeature_RNA,params$nFeature_RNA_lower_threshold)&
+  Data$nFeature_RNA<quantile(Data$nFeature_RNA,params$nFeature_RNA_higher_threshold)&
+  Data$nCount_RNA>quantile(Data$nCount_RNA,params$nCount_RNA_lower_threshold)&
+  Data$nCount_RNA<quantile(Data$nCount_RNA,params$nCount_RNA_higher_threshold)&
+  Data$percent.mt<params$mitochondrial_contents_threshold&
+  Data$percent.ribo<params$ribosomal_contents_threshold,
+  yes="Keep",
+  no="Drop"
+)
+
+VlnPlot(Data,features = c('nFeature_RNA','nCount_RNA','percent.mt','percent.ribo',pt.size = 0),group.by = "Filtering",ncol = 2,pt.size = 0)+NoLegend()
+
+Data=subset(Data,subset=Filtering=='Keep')
+saveRDS(Data,params$filtered_output)
+```
+
