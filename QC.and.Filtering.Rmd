@@ -25,6 +25,13 @@ params:
   mitochondrial_contents_threshold: 50
   doubletpercentage: 0.01
   filtered_output: ""
+  normMethod: "LogNormalize"
+  varFeatures: 3000
+  DoubletRemoval: TRUE
+  Metadata: ''
+  RemoveMitoGenes: FALSE
+  RemoveRiboGenes: FALSE
+
 ---
 
 
@@ -34,10 +41,13 @@ suppressPackageStartupMessages({
 library(dplyr)
 library(Seurat)
 library(ggplot2)
+#BiocManager::install("DropletUtils")
 library(DropletUtils)
-if(!require(remotes)) install.packages("remotes",repos = "http://cran.us.r-project.org")
-remotes::install_github("chris-mcginnis-ucsf/DoubletFinder")
+#if(!require(remotes)) install.packages("remotes",repos = "http://cran.us.r-project.org")
+#remotes::install_github("chris-mcginnis-ucsf/DoubletFinder")
 library(DoubletFinder)
+#if(!require(clustree)) install.packages("clustree",repos = "http://cran.us.r-project.org")
+library(clustree)
 
 })
 
@@ -49,6 +59,34 @@ If the data is a raw Count Matrix, meaning that the empty droplets are not filte
 
 ```{r read in samples}
 Data=Read10X_h5(params$SamplePath)
+Data=Data[,colSums(Data)!=0]
+if (params$RemoveRiboGenes) {
+	
+	
+if (any(grepl("^RP[SL]",rownames(Data)))) {
+	rb.genes <- rownames(Data)[grep("^RP[SL]",rownames(Data))]
+	Data=Data[!rownames(Data)%in%rb.genes,]
+}
+else if (any(grepl("^Rp[sl]",rownames(Data)))) {
+	rb.genes <- rownames(Data)[grep("^Rp[sl]",rownames(Data))]
+	GTgenes=c("Gm42418","AY036118")
+	rb.genes <-c(rb.genes,GTgenes)
+	Data=Data[!rownames(Data)%in%rb.genes,]
+}
+}
+
+if (params$RemoveMitoGenes) {
+	
+	
+if (any(grepl("^MT-",rownames(Data)))) {
+	mt.genes <- rownames(Data)[grep("^MT-",rownames(Data))]
+	Data=Data[!rownames(Data)%in%mt.genes,]
+}
+else if (any(grepl("^mt-",rownames(Data)))) {
+	mt.genes <- rownames(Data)[grep("^mt-",rownames(Data))]
+	Data=Data[!rownames(Data)%in%mt.genes,]
+}
+}
 
 if (params$RawInput) {
   empty=emptyDrops(Data)
@@ -64,7 +102,7 @@ if (params$RawInput) {
 
 ```
 
-# QC
+# QC {.tabset}
 
 In this section the number of genes, number of UMIs and the percentage of mitochondrial contents and ribosomal contents will be visualized.
 
@@ -72,7 +110,7 @@ Mitochondrial contents and ribosomal contents will be calculated based on the mi
 
 Cells with very high mitochondrial and ribosomal contents will bias the downstream clustering and differential expression analysis.
 
-```{r QC, fig.width=10,fig.height=10}
+```{r QC, fig.width=5,fig.height=5}
 
 Data=CreateSeuratObject(Data)
 Data$sample=params$SampleName
@@ -102,81 +140,144 @@ else if (any(grepl("^mt-",rownames(Data)))) {
 
 Unfiltered = Data
 
-VlnPlot(Unfiltered,features = c('nFeature_RNA','nCount_RNA','percent.mt','percent.ribo'),ncol = 2,pt.size = 0)
+```
 
+## Violin plot of number of gene per cell
+
+``` {r vnFeature, fig.width=5,fig.height=5}
+VlnPlot(Unfiltered,features = c("nFeature_RNA"),pt.size = 0)
+```
+
+## Violin plot of number of UMIs per cell
+
+``` {r vnCount, fig.width=5,fig.height=5}
+VlnPlot(Unfiltered,features = c("nCount_RNA"),pt.size = 0)
+```
+
+## Violin plot of mitochondrial contents per cell
+
+``` {r vmt, fig.width=5,fig.height=5}
+VlnPlot(Unfiltered,features = c("percent.mt"),pt.size = 0)
+```
+
+## Violin plot of ribosomal contents per cell
+
+``` {r vrb, fig.width=5,fig.height=5}
+VlnPlot(Unfiltered,features = c("percent.ribo"),pt.size = 0)
+```
+
+## Scatter plot of number of genes per cell vs number of UMIs per cell
+
+``` {r sfu, fig.width=5,fig.height=5}
 FeatureScatter(Unfiltered,
-               feature1 = 'nFeature_RNA',
-               feature2 = 'nCount_RNA')+ NoLegend()
+               feature1 = "nFeature_RNA",
+               feature2 = "nCount_RNA")+ NoLegend()
+```
 
-if (isFALSE(all(Unfiltered[['percent.mt']]==0))){
+## Scatter plot of mitochondrial contents
+
+``` {r smfu, fig.width=5,fig.height=5}
+if (isFALSE(all(Unfiltered[["percent.mt"]]==0))){
   FeatureScatter(Unfiltered,
-               feature1 = 'nFeature_RNA',
-               feature2 = 'percent.mt')+ NoLegend()
+               feature1 = "nFeature_RNA",
+               feature2 = "percent.mt")+ NoLegend()
 
   FeatureScatter(Unfiltered,
-               feature1 = 'nCount_RNA',
-               feature2 = 'percent.mt')+ NoLegend()
+               feature1 = "nCount_RNA",
+               feature2 = "percent.mt")+ NoLegend()
   }
-
-if (isFALSE(all(Unfiltered[['percent.ribo']]==0))){
-  FeatureScatter(Unfiltered,
-               feature1 = 'nFeature_RNA',
-               feature2 = 'percent.ribo')+ NoLegend()
-
-  FeatureScatter(Unfiltered,
-               feature1 = 'nCount_RNA',
-               feature2 = 'percent.ribo')+ NoLegend()
-}
-
 
 ```
 
-# Doublet Classification
+## Scatter plot of mitochondrial contents
+
+``` {r srfu, fig.width=5,fig.height=5}
+if (isFALSE(all(Unfiltered[["percent.ribo"]]==0))){
+  FeatureScatter(Unfiltered,
+               feature1 = "nFeature_RNA",
+               feature2 = "percent.ribo")+ NoLegend()
+
+  FeatureScatter(Unfiltered,
+               feature1 = "nCount_RNA",
+               feature2 = "percent.ribo")+ NoLegend()
+}
+
+```
+
+# Doublet Classification {.tabset}
 
 Doublets, or sometimes called multiplets, are the droplets which include two or more cells. Including these droplets in the downstream analysis will bias the results because these droplets include gene expression profiles of more than 1 cell.
 
 DoubletFinder is used to classify the doublet. The violin plot in this section will show the number features and UMIs of the doublets vs that of non-doublets.
 
-
-```{r Doublet Removal, error=FALSE, fig.height=15, fig.width=15, message=FALSE, warning=FALSE,results = FALSE}
+## Doublet Simulation and detection 
+```{r Doublet Removal, error=FALSE, fig.height=5, fig.width=5, message=FALSE, warning=FALSE,results = FALSE}
 
 DoubletRemoval <- NormalizeData(Data)
 DoubletRemoval <- FindVariableFeatures(DoubletRemoval)
 DoubletRemoval <- ScaleData(DoubletRemoval)
 
-DoubletRemoval <- RunPCA(DoubletRemoval)
+DoubletRemoval <- RunPCA(DoubletRemoval,npcs=100)
+
+pc.changes=diff(diff(DoubletRemoval@reductions$pca@stdev))
+pc.changes=abs(pc.changes)
+pc.changes=which(pc.changes>=mean(pc.changes))
+
+DoubletRemoval=FindNeighbors(DoubletRemoval,dims = 1:(max(pc.changes)+2),reduction = "pca")
+
+DoubletRemoval=FindClusters(DoubletRemoval,resolution = seq(2.0,0.1,-0.1))
+
+names=paste0(DefaultAssay(DoubletRemoval),"_snn_res.")
+SC3_Stability=clustree(DoubletRemoval,prefix = names)
+SC3_Stability.results=SC3_Stability$data
+SC3_Stability.results=SC3_Stability.results[,c(names,"sc3_stability")]
+colnames(SC3_Stability.results)[1]="resolution"
+SC3_Stability.results.mean=aggregate(sc3_stability~resolution,SC3_Stability.results,mean)
+colnames(SC3_Stability.results.mean)[2]="sc3_stability_mean"
+Idents(DoubletRemoval)=paste0(DefaultAssay(DoubletRemoval),"_snn_res.",max(as.numeric(as.character(SC3_Stability.results.mean$resolution))[SC3_Stability.results.mean$sc3_stability_mean==max(SC3_Stability.results.mean$sc3_stability_mean)]))
+
+DoubletRemoval$seurat_clusters=Idents(DoubletRemoval)
 
 
-params_selection <- paramSweep_v3(DoubletRemoval, PCs = 1:25, sct = F)
+
+params_selection <- paramSweep_v3(DoubletRemoval, PCs = 1:(max(pc.changes)+2), sct = F)
 params_selection <- summarizeSweep(params_selection, GT = FALSE)
 params_selection <- find.pK(params_selection)
 
 
 
-annotations <- DoubletRemoval@meta.data$orig.ident
+annotations <- DoubletRemoval@meta.data$DoubletRemoval$seurat_clusters
 
 homotypic.prop <- modelHomotypic(annotations) 
 nExp_poi <- round(params$doubletpercentage*nrow(DoubletRemoval@meta.data))  
 nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
 
 
-DoubletRemoval <- doubletFinder_v3(DoubletRemoval, PCs = 1:25, pN = 0.25, pK =as.numeric(as.character(params_selection$pK))[params_selection$BCmetric==max(params_selection$BCmetric)], nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+DoubletRemoval <- doubletFinder_v3(DoubletRemoval, PCs = 1:(max(pc.changes)+2), pN = 0.25, pK =as.numeric(as.character(params_selection$pK))[params_selection$BCmetric==max(params_selection$BCmetric)], nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
 doublet.classification.name=colnames(DoubletRemoval@meta.data)[ncol(DoubletRemoval@meta.data)]
 DoubletRemoval$Doublet.Classification=DoubletRemoval@meta.data[,doublet.classification.name]
 
-VlnPlot(DoubletRemoval,c("nCount_RNA","nFeature_RNA"),group.by = "Doublet.Classification",pt.size = 0)+NoLegend()
-
 Data$Doublet.Classification=DoubletRemoval$Doublet.Classification
+
 
 ```
 
+## Doublet Visualization
 
-# Filtering
+```{r Doublet Visualization, error=FALSE, fig.height=5, fig.width=5, message=FALSE, warning=FALSE,results = FALSE }
+VlnPlot(DoubletRemoval,c("nCount_RNA","nFeature_RNA"),group.by = "Doublet.Classification",pt.size = 0)+NoLegend()
+
+```
+
+# Filtering {.tabset}
 
 Based on the quantile information, cells with too low or too high number of features and UMIs are filtered out, which can be observed on the violin plot.
 
-```{r Filtering, fig.width=15,fig.height=15,error=FALSE,warning=FALSE,message=FALSE}
+## Violin Plots of number of genes and UMIs of doublets and singlets
 
+```{r Filtering, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE}
+
+if (params$DoubletRemoval){
 Data$Filtering = ifelse(
   Data$Doublet.Classification!='Doublet'&
   Data$nFeature_RNA>quantile(Data$nFeature_RNA,params$nFeature_RNA_lower_threshold)&
@@ -189,9 +290,78 @@ Data$Filtering = ifelse(
   no="Drop"
 )
 
-VlnPlot(Data,features = c('nFeature_RNA','nCount_RNA','percent.mt','percent.ribo',pt.size = 0),group.by = "Filtering",ncol = 2,pt.size = 0)+NoLegend()
+} else {
+Data$Filtering = ifelse(
+  Data$nFeature_RNA>quantile(Data$nFeature_RNA,params$nFeature_RNA_lower_threshold)&
+  Data$nFeature_RNA<quantile(Data$nFeature_RNA,params$nFeature_RNA_higher_threshold)&
+  Data$nCount_RNA>quantile(Data$nCount_RNA,params$nCount_RNA_lower_threshold)&
+  Data$nCount_RNA<quantile(Data$nCount_RNA,params$nCount_RNA_higher_threshold)&
+  Data$percent.mt<params$mitochondrial_contents_threshold&
+  Data$percent.ribo<params$ribosomal_contents_threshold,
+  yes="Keep",
+  no="Drop")
+}
 
-Data=subset(Data,subset=Filtering=='Keep')
-saveRDS(Data,params$filtered_output)
+VlnPlot(Data,features = c("nFeature_RNA","nCount_RNA","percent.mt","percent.ribo",pt.size = 0),group.by = "Filtering",ncol = 2,pt.size = 0)+NoLegend()
+
+Data=subset(Data,subset=Filtering=="Keep")
+
 ```
 
+## Barplot of filtering results
+
+```{r Filtering barplot, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE}
+
+Filtering_statistics=data.frame(Category=c("Unfiltered","Filtered"),CellNumber=c(ncol(Unfiltered),ncol(Data)))
+Filtering_statistics$Category=factor(Filtering_statistics$Category,levels = c("Unfiltered","Filtered"))
+
+ggplot(Filtering_statistics,aes(x=Category,y=CellNumber))+geom_bar(stat="identity")
+
+```
+
+
+# Normalization
+
+As the violin plots shown in the QC section, the sequencing depth and coverage of each cell in a single cell RNA-Seq dataset vary significantly.
+
+The normalization step normalize the gene expression profile of each cell, which makes them comparable to each other in the downstream analysis.
+
+The SCTransform is recommended as it enhances the biological signature in the data, however it is quite time-consuming and memory-consuming. 
+
+The LogNormalize is very standard practice time-efficient.
+
+```{r Normalization, error=FALSE, fig.height=5, fig.width=5, message=FALSE, warning=FALSE,results = FALSE}
+
+if (file.exists(params$Metadata)) {
+	Metadata=read.table(params$Metadata,sep="\t",check.names=F,header=T,row.names=NULL)
+	if ("Sample"%in%colnames(Metadata)) {
+	AttributeList=colnames(Metadata)[colnames(Metadata)!="Sample"]
+	if (params$SampleName%in%Metadata$Sample) {
+		for (i in 1:length(AttributeList)) {
+			Data[[AttributeList[i]]]=as.character(Metadata[Metadata$Sample==params$SampleName,AttributeList[i]])
+		}
+	} else {
+		for (i in 1:length(AttributeList)) {
+			Data[[AttributeList[i]]]=""
+		}
+	}
+
+}
+}
+
+
+if (params$normMethod=="SCT") {
+	if (all(Data[["percent.mt"]]==0)) {
+		Data <- SCTransform(Data,variable.features.n=params$varFeatures)
+	} else {
+		Data <- SCTransform(Data,variable.features.n=params$varFeatures,vars.to.regress="percent.mt")
+
+	}
+	} else {
+	Data <- NormalizeData(object = Data,normalization.method=params$normMethod)
+}
+
+saveRDS(Data,params$filtered_output)
+
+
+```
