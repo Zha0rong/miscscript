@@ -55,6 +55,13 @@ If the data is a raw Count Matrix, meaning that the empty droplets are not filte
 
 ```{r read in samples}
 Data=Read10X_h5(params$SamplePath)
+MultiModal=F
+if (is.list(Data)) {
+  MultiModal=T
+  Raw=Data
+  Data=Data[['Gene Expression']]
+  
+}
 Data=Data[,colSums(Data)!=0]
 if (params$RemoveRiboGenes) {
 	
@@ -355,6 +362,13 @@ if (params$normMethod=="SCT") {
 	}
 	} else {
 	Data <- NormalizeData(object = Data,normalization.method=params$normMethod)
+	}
+
+if (MultiModal) {
+  for (name in names(Raw)[names(Raw)!='Gene Expression']) {
+    Data[[gsub(" ","",name)]]=CreateSeuratObject(Raw[[name]][,colnames(Data)])
+  }
+
 }
 
 saveRDS(Data,params$filtered_output)
