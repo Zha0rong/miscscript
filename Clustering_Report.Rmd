@@ -1,0 +1,462 @@
+---
+title: "Single Cell RNA-Seq Clustering Report"
+author: "Zhaorong Li"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+      toc_depth: 3
+    number_sections: true
+    fig_caption: yes
+    theme: cerulean
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+params:
+  
+  SamplePath: ""
+  npcs: 25
+  minRes: 0.1
+  maxRes: 2.0
+  filtered_output: ""
+  algorithm: 2
+---
+
+
+```{r setup, include=FALSE}
+
+suppressPackageStartupMessages({
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+#if(!require(remotes)) install.packages("remotes",repos = "http://cran.us.r-project.org")
+#if(!require(data.table)) install.packages("remotes",repos = "http://cran.us.r-project.org")
+#if(!require(DT)) install.packages("DT",repos = "http://cran.us.r-project.org")
+#if(!require(clustree)) install.packages("clustree",repos = "http://cran.us.r-project.org")
+
+#remotes::install_github("chris-mcginnis-ucsf/DoubletFinder")
+library(DoubletFinder)
+library(data.table)
+library(DT)
+library(clustree)
+
+
+})
+library(cluster)
+Data=readRDS(params$SamplePath)
+```
+
+# Sample Statistics {.tabset}
+
+In this section violin plots will show the number of genes, UMIs, mitochondrial percentages and ribosomal percentages of cells after filtering.
+
+If there is more than 1 sample in the dataset, the violin plots will group the cells by samples. This is a very good way to compare quality of cells.
+
+## Number of genes per cell
+
+```{r Number of genes per cell by sample, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"nFeature_RNA",group.by="sample",pt.size = 0)+NoLegend()
+
+```
+
+## Number of UMIs per cell
+
+```{r Number of UMIs per cell by sample, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"nCount_RNA",group.by="sample",pt.size = 0)+NoLegend()
+
+```
+
+## mitochondrial percentage per cell
+
+```{r mitochondrial percentage per cell by sample, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"percent.mt",group.by="sample",pt.size = 0)+NoLegend()
+
+```
+
+## ribosomal percentage per cell
+
+```{r ribosomal percentage per cell by sample, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"percent.ribo",group.by="sample",pt.size = 0)+NoLegend()
+
+```
+
+# Visualize PCA results
+
+The results of principle component analysis give more insight than people usually realize. For example, the genes that contribute the most to the top principle components can help people to do sanity check of the data: ideally these genes will match the gene markers of the cell sub-populations in the data. This means that the cell heterogeneity is being captured.
+
+```{r Dimension Reduction heatmap, fig.width=5,fig.height=5}
+
+DimHeatmap(Data,dims = 1:10,nfeatures = 9,balanced = T,cells = 500,ncol = 3)
+
+```
+
+The genes that contribute the most to the top principle components can be visualized using Dimention Reduction heatmap shown above.
+
+
+Another good way to visualize the PCA results is elbow plot, which plot the standard deviation of cells on each principle components. 
+
+```{r Elbow Plot, fig.width=5,fig.height=5}
+
+ElbowpotData=data.frame(stdev=Data@reductions[[ifelse("harmony"%in%names(Data@reductions),yes="harmony",no="pca")]]@stdev,PCs=seq(1,length(Data@reductions[[ifelse("harmony"%in%names(Data@reductions),yes="harmony",no="pca")]]@stdev)))
+
+pc.changes=diff(diff(ElbowpotData$stdev))
+pc.changes=abs(pc.changes)
+pc.changes=which(pc.changes>=mean(pc.changes))
+ggplot(ElbowpotData,aes(x=PCs,y=stdev,label=PCs))+geom_point()+theme_bw()+geom_vline(xintercept = max(pc.changes)+2,color='darkred')+geom_vline(xintercept = params$npcs,color='green')
+
+
+```
+
+# Visualize the UMAP and TSNE {.tabset}
+
+Before doing any clustering, let us first use tSNE and UMAP to see if the batch effects between samples are removed.
+
+If you only have one sample in this analysis, then please just enjoy the beautiful tSNE and UMAP. 
+
+## tSNE {.tabset}
+
+```{r tSNE, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+Data=RunTSNE(Data,dims = 1:ifelse(params$npcs==0,yes=max(pc.changes)+2,no=params$npcs)
+,reduction = ifelse("harmony"%in%names(Data@reductions),
+                   yes="harmony",
+                   no="pca"))
+```
+
+### tSNE colored by sample
+
+```{r tSNE colored by sample, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+if (length(unique(Data$sample))==1){
+DimPlot(Data,reduction = "tsne")+NoLegend()
+} else {
+  DimPlot(Data,reduction = "tsne",group.by="sample")+NoLegend()
+
+}
+```
+
+### tSNE colored by sample without batch effect correction
+
+```{r tSNE without batch effect correction, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+  Temp=Data
+  Temp=RunTSNE(Temp,dims = 1:ifelse(params$npcs==0,yes=max(pc.changes)+2,no=params$npcs),reduction = "pca")
+  DimPlot(Temp,reduction = "tsne",group.by="sample")+NoLegend()
+
+```
+
+### tSNE split by sample
+
+```{r tSNE split by sample, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+if (length(unique(Data$sample))==1){
+DimPlot(Data,reduction = "tsne")+NoLegend()
+} else {
+  DimPlot(Data,reduction = "tsne",split.by="sample",ncol=2)+NoLegend()
+}
+```
+
+### tSNE split by sample without batch effect correction
+
+```{r tSNE split by sample without batch effect correction, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+  DimPlot(Temp,reduction = "tsne",split.by="sample",ncol=2)+NoLegend()
+  rm(Temp)
+
+```
+
+## UMAP {.tabset}
+
+```{r umap, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+Data=RunUMAP(Data,dims = 1:ifelse(params$npcs==0,yes=max(pc.changes)+2,no=params$npcs),reduction = ifelse("harmony"%in%names(Data@reductions),
+                   yes="harmony",
+                   no="pca"))
+```
+
+### UMAP colored by sample
+
+```{r UMAP colored by sample, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+if (length(unique(Data$sample))==1){
+DimPlot(Data,reduction = "umap")+NoLegend()
+} else {
+  DimPlot(Data,reduction = "umap",group.by="sample")+NoLegend()
+
+}
+```
+
+### UMAP colored by sample without batch effect correction
+
+```{r UMAP without batch effect correction, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+  Temp=Data
+  Temp=RunUMAP(Temp,dims = 1:(ifelse(params$npcs==0,yes=max(pc.changes)+2,no=params$npcs)),reduction = "pca")
+  DimPlot(Temp,reduction = "umap",group.by="sample")+NoLegend()
+```
+
+### UMAP split by sample
+
+```{r UMAP split by sample, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+if (length(unique(Data$sample))==1){
+DimPlot(Data,reduction = "umap")+NoLegend()
+} else {
+  DimPlot(Data,reduction = "umap",split.by="sample",ncol=2)+NoLegend()
+}
+```
+
+### UMAP split by sample without batch effect correction
+
+```{r UMAP split by sample without batch effect correction, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+  DimPlot(Temp,reduction = "umap",split.by="sample",ncol=2)+NoLegend()
+  rm(Temp)
+  
+```
+
+
+
+## Note on tSNE and UMAP.
+
+Both visualizations are widely used. Feel free to choose the one you like.
+
+One thing to take in mind is that it is faster to generate UMAP reduction than to generate tSNE reduction.
+
+# Clustering
+
+## Building the nearest neighborhood graph
+
+In order to cluster the cells, the shared nearest neighborhood graph of cells are constructed using the top principle components (default is 25).
+
+
+```{r Build snn graph, error=FALSE, fig.height=5, fig.width=5, message=FALSE, warning=FALSE,results = FALSE}
+
+Data=FindNeighbors(Data,dims = 1:ifelse(params$npcs==0,yes=max(pc.changes)+2,no=params$npcs),reduction = ifelse("harmony"%in%names(Data@reductions),
+                   yes="harmony",
+                   no="pca"))
+
+
+
+```
+
+
+## Clustering {.tabset}
+
+And then Graph Based Community Detection Algorithm is used to cluster the cells.
+
+In order to select the best clustering resolution, the sc3 stability index is calculate for each resolution. The resolution with the highest mean sc3 stability index (marked by red line in the figure below).
+
+```{r Clustering, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,results=FALSE,echo=FALSE}
+
+Data=FindClusters(Data,algorithm = params$algorithm,resolution = seq(params$maxRes,params$minRes,-0.1))
+
+names=paste0(DefaultAssay(Data),"_snn_res.")
+SC3_Stability=clustree(Data,prefix = names)
+SC3_Stability.results=SC3_Stability$data
+SC3_Stability.results=SC3_Stability.results[,c(names,"sc3_stability")]
+colnames(SC3_Stability.results)[1]="resolution"
+SC3_Stability.results.mean=aggregate(sc3_stability~resolution,SC3_Stability.results,mean)
+colnames(SC3_Stability.results.mean)[2]="sc3_stability_mean"
+Idents(Data)=paste0(DefaultAssay(Data),"_snn_res.",max(as.numeric(as.character(SC3_Stability.results.mean$resolution))[SC3_Stability.results.mean$sc3_stability_mean==max(SC3_Stability.results.mean$sc3_stability_mean)]))
+
+Data$seurat_clusters=Idents(Data)
+
+Cluster.distribution=data.frame(table(Data$seurat_clusters,Data$sample))
+colnames(Cluster.distribution)=c("Cluster","Sample","CellNumber")
+
+
+
+```
+
+### Cluster stability assessment
+
+```{r Cluster stability assessment, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,results=FALSE,echo=FALSE}
+ggplot(SC3_Stability.results,aes(x=resolution,y=sc3_stability))+geom_boxplot()+geom_line(data=SC3_Stability.results.mean,aes(x=resolution,y=sc3_stability_mean,group=1))+geom_vline(xintercept = SC3_Stability.results.mean$resolution[SC3_Stability.results.mean$sc3_stability_mean==max(SC3_Stability.results.mean$sc3_stability_mean)],color='red')
+```
+
+### Clustree assessment
+
+This figure shows how the cells are assigned as the resolution changes. The color of the arrow shows the amount of cells going into the cluster in the next level and the direction of the arrow shows the identity of cluster that the cells are going to.
+
+As the resolution increases, the arrows will start to appear "messy". This means that the clustering algorithm is having trouble assigning cells.
+
+```{r Clustree assessment, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,results=FALSE,echo=FALSE}
+SC3_Stability
+```
+
+### Sample Distribution over Cluster
+```{r Sample distribution, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,results=FALSE,echo=FALSE}
+
+
+
+ggplot(Cluster.distribution,aes(y=Cluster,x=CellNumber,fill=Sample))+geom_bar(stat="identity",position="fill")
+
+```
+
+### Cluster Distribution over Sample
+```{r Cluster distribution, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,results=FALSE,echo=FALSE}
+
+Cluster.distribution=data.frame(table(Data$seurat_clusters,Data$sample))
+colnames(Cluster.distribution)=c("Cluster","Sample","CellNumber")
+
+ggplot(Cluster.distribution,aes(y=Sample,x=CellNumber,fill=Cluster))+geom_bar(stat="identity",position="fill")
+
+```
+
+### tSNE Visualization of the Cluster
+
+```{r tSNE Visualization of the Cluster, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,results=FALSE,echo=FALSE}
+DimPlot(Data,reduction = "tsne",label = T)
+
+```
+
+### tSNE distributed by sample
+
+```{r tSNE distributed by sample, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+if (length(unique(Data$sample))==1){
+DimPlot(Data,reduction = "tsne")+NoLegend()
+} else {
+  DimPlot(Data,reduction = "tsne",split.by="sample",ncol=2)+NoLegend()
+}
+```
+
+### UMAP Visualization of the Cluster
+
+```{r UMAP Visualization of the Cluster, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,results=FALSE,echo=FALSE}
+DimPlot(Data,reduction = "umap",label = T)
+
+```
+
+### UMAP distributed by sample
+
+```{r UMAP distributed by sample, fig.width=5,fig.height=5,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+if (length(unique(Data$sample))==1){
+DimPlot(Data,reduction = "umap")+NoLegend()
+} else {
+  DimPlot(Data,reduction = "umap",split.by="sample",ncol=2)+NoLegend()
+}
+```
+
+
+
+## Cluster Markers {.tabset}
+
+Use differential expression analysis to find Gene markers for each cluster. These gene markers are very helpful in identifying Cell types.
+
+```{r Find Cluster markers, fig.width=15,fig.height=20,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+
+Data=NormalizeData(Data,assay = "RNA")
+
+DefaultAssay(Data)="RNA"
+
+Data.markers=FindAllMarkers(Data,only.pos = T)
+
+#if ("cluster" %in% colnames(Data.markers)){
+top10 = Data.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC)
+#} else {
+#	top10=NULL
+#}
+saveRDS(Data,"Final_Analysis.rds")
+
+```
+
+### Top gene markers for clusters
+
+```{r Top gene markers for clusters, fig.width=15,fig.height=20,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+#if (!is.null(top10)){
+DT::datatable(top10,filter = "top",options = list(autoWidth = TRUE))
+#}
+```
+
+### Heatmap of top gene markers for clusters
+
+```{r heatmap of Top gene markers for clusters, fig.width=15,fig.height=20,error=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+#if (!is.null(top10)){
+Vis=ScaleData(Data,features = top10$gene,assay = "RNA")
+DoHeatmap(Vis, features = top10$gene,assay = "RNA") + NoLegend()
+#}
+```
+
+
+## Cluster Results Quality Control {.tabset}
+
+In this section the number of genes, UMIs, mitochondrial percentages and ribosomal percentages will be plotted by cluster. This step is to check whether the clustering results are significantly biased by the sequencing depth, sequencing coverage and cell viability.
+
+However, researches have shown (insert reference here later) that number of genes, UMIs and mitochondrial contents will vary between cell types and sub-populations. 
+
+### Violin Plots {.tabset}
+
+#### number of genes per cluster
+
+```{r number of genes per cluster v, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"nFeature_RNA",group.by="seurat_clusters",pt.size = 0)+NoLegend()
+
+```
+
+#### number of UMIs per cluster
+
+```{r number of UMIs per cluster v, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"nCount_RNA",group.by="seurat_clusters",pt.size = 0)+NoLegend()
+
+```
+
+#### mitochondrial percentages per cluster
+
+```{r mitochondrial percentages per cluster v, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"percent.mt",group.by="seurat_clusters",pt.size = 0)+NoLegend()
+
+```
+
+#### ribosomal percentages per cluster
+
+```{r ribosomal percentages per cluster v, fig.width=5,fig.height=5}
+
+VlnPlot(Data,"percent.ribo",group.by="seurat_clusters",pt.size = 0)+NoLegend()
+
+```
+
+### Ridge Plots {.tabset}
+
+#### number of genes per cluster
+
+```{r number of genes per cluster r, fig.width=5,fig.height=5}
+
+RidgePlot(Data,"nFeature_RNA",group.by="seurat_clusters")+NoLegend()
+
+```
+
+#### number of UMIs per cluster
+
+```{r number of UMIs per cluster r, fig.width=5,fig.height=5}
+
+RidgePlot(Data,"nCount_RNA",group.by="seurat_clusters")+NoLegend()
+
+```
+
+#### mitochondrial percentages per cluster
+
+```{r mitochondrial percentages per cluster r, fig.width=5,fig.height=5}
+
+RidgePlot(Data,"percent.mt",group.by="seurat_clusters")+NoLegend()
+
+```
+
+#### ribosomal percentages per cluster
+
+```{r ribosomal percentages per cluster r, fig.width=5,fig.height=5}
+
+RidgePlot(Data,"percent.ribo",group.by="seurat_clusters")+NoLegend()
+
+```
+
+

@@ -311,7 +311,7 @@ Data=subset(Data,subset=Filtering=="Keep")
 Filtering_statistics=data.frame(Category=c("Unfiltered","Filtered"),CellNumber=c(ncol(Unfiltered),ncol(Data)))
 Filtering_statistics$Category=factor(Filtering_statistics$Category,levels = c("Unfiltered","Filtered"))
 
-ggplot(Filtering_statistics,aes(x=Category,y=CellNumber))+geom_bar(stat="identity")
+ggplot(Filtering_statistics,aes(x=Category,y=CellNumber,label=CellNumber))+geom_bar(stat="identity")+geom_text(size = 3, position = position_stack(vjust = 0.75))
 
 ```
 
